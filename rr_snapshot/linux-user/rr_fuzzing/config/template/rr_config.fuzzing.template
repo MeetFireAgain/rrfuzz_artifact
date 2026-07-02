@@ -1,0 +1,73 @@
+# =========================================
+# RR-Fuzz Configuration File - Fuzzing Mode
+# =========================================
+# Used for fuzzing testing based on trace
+#
+# Usage:
+#   # 1. Use with fuzz_conductor.py (recommended)
+#   python3 fuzzing/fuzz_conductor.py \
+#     --qemu ./build/qemu-x86_64 \
+#     --trace ./trace.dat \
+#     --target /usr/bin/target \
+#     --iterations 100
+#
+#   # 2. Manual startup (advanced users)
+#   RR_CONFIG_FILE=./rr_config.fuzzing.template \
+#   qemu-x86_64 /usr/bin/target
+#
+# Notes:
+#   1. The mode field is auto-detected; no need to set RR_MODE environment variable separately
+#   2. Requires an external fuzzer (e.g., fuzz_conductor.py) to create IPC pipes and shared memory
+#   3. trace_file must be in binary format (.dat); strace text format is not supported
+# =========================================
+
+# === Core Configuration ===
+# Enable RR-Fuzz
+enabled=true
+
+# Operating mode (auto-detected)
+mode=fuzzing
+
+# Trace file input path (must be a previously recorded file)
+trace_file=./trace-record.txt
+
+# === IPC Communication Configuration ===
+# Shared memory name
+shared_memory_name=rr_fuzzing_shm
+
+# Shared memory size (bytes) - must match the Python side
+shared_memory_size=65536
+
+# IPC timeout (milliseconds)
+ipc_timeout=1000
+
+# Command pipe path (fuzzer -> QEMU)
+cmd_pipe_path=/tmp/rr_cmd_pipe
+
+# Status pipe path (QEMU -> fuzzer)
+status_pipe_path=/tmp/rr_status_pipe
+
+# === Fork Server Configuration ===
+# Fork strategy:
+#   0 = STRICT     - Strict mode: only fork on I/O operations with ret>0
+#   1 = RELAXED    - Relaxed mode: allow probing errors like ENOENT/EACCES
+#   2 = AGGRESSIVE - Aggressive mode: fork on any I/O-type syscall (recommended)
+#   3 = FALLBACK   - Fallback mode: force fork after N syscalls
+fork_strategy=2
+
+# Fallback threshold: how many syscalls before forcing a fork (only effective when strategy=3)
+fork_threshold=20
+
+# === Debug Configuration ===
+# Debug level: 0=off, 1=error, 2=warn, 3=info, 4=verbose, 5=trace
+debug_level=3
+
+# Debug log output file (default: stderr)
+# debug_file=./debug-fuzzing.log
+
+# === Notes ===
+# 1. Fuzzing mode requires an external fuzzer (e.g., fuzz_conductor.py)
+# 2. IPC pipes must be created in advance: mkfifo /tmp/rr_cmd_pipe /tmp/rr_status_pipe
+# 3. trace_file must be a valid trace generated via record mode
+# 4. Fork Server will start automatically at the first I/O system call
+

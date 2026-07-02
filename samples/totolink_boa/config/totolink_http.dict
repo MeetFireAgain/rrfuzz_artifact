@@ -1,0 +1,48 @@
+# HTTP Actions
+"GET"
+"POST"
+"HEAD"
+"PUT"
+"DELETE"
+"OPTIONS"
+
+# Versions
+"HTTP/1.0"
+"HTTP/1.1"
+
+# URL/Paths (TOTOLINK specific)
+"/"
+"/index.html"
+"/login.htm"
+"/boafrm/formLogin"
+"/img/login_logo.png"
+"/goform/"
+"/cgi-bin/"
+"admin"
+
+# Headers
+"Host:"
+"User-Agent:"
+"Accept:"
+"Accept-Encoding:"
+"Connection:"
+"Content-Length:"
+"Content-Type:"
+"Authorization:"
+"Cookie:"
+"Referer:"
+
+# Common Values
+"close"
+"keep-alive"
+"application/x-www-form-urlencoded"
+"text/html"
+"Basic "
+"Mozilla/5.0"
+"gzip"
+"chunked"
+
+# Payload markers
+"username="
+"password="
+"submit-url="

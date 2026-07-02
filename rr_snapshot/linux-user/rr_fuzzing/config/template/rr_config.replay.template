@@ -1,0 +1,50 @@
+# =========================================
+# RR-Fuzz Configuration File - Replay Mode
+# =========================================
+# Used for replaying previously recorded traces
+#
+# Usage:
+#   # 1. Use binary trace (recommended)
+#   RR_CONFIG_FILE=./rr_config.replay.template \
+#   qemu-x86_64 /usr/bin/target
+#
+#   # 2. Use strace text trace (compatibility mode)
+#   RR_CONFIG_FILE=./rr_config.replay.template \
+#   RR_STRACE_MODE=True \
+#   qemu-x86_64 /usr/bin/target
+#
+# Notes:
+#   1. The mode field is auto-detected; no need to set RR_MODE environment variable separately
+#   2. Binary trace (.dat) is used by default; set RR_STRACE_MODE=True to use strace text format
+# =========================================
+
+# === Core Configuration ===
+# Enable RR-Fuzz
+enabled=true
+
+# Operating mode (auto-detected)
+mode=replay
+
+# Trace file input path (must be a previously recorded file)
+trace_file=/home/webfuzz/Documents/qemu/linux-user/rr_fuzzing/strace-record-ls.txt
+
+# === Debug Configuration ===
+# Debug level: 0=off, 1=error, 2=warn, 3=info, 4=verbose, 5=trace
+debug_level=4
+
+# Debug log output file (default: stderr)
+# debug_file=./debug-replay.log
+
+# === Notes ===
+# 1. Reads binary trace (.dat) by default; set RR_STRACE_MODE=True to use text trace
+# 2. trace_file must be a previously recorded trace file
+# 3. Binary trace has better performance and precision; recommended
+# 4. Log output verbosity can be controlled via debug_level
+
+# === Parameters not needed (not used in Replay mode) ===
+# shared_memory_name - Fuzzing mode only
+# cmd_pipe_path - Fuzzing mode only
+# status_pipe_path - Fuzzing mode only
+# fork_strategy - Fuzzing mode only
+# fork_threshold - Fuzzing mode only
+

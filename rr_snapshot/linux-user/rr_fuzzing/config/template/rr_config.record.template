@@ -1,0 +1,35 @@
+# =========================================
+# RR-Fuzz Configuration File - Record Mode
+# =========================================
+# Used for recording program execution traces
+#
+# Usage:
+#   RR_CONFIG_FILE=./rr_config.record.template qemu-x86_64 -strace -D ./trace-record.txt /usr/bin/ls
+#
+# Note: The mode field is auto-detected; no need to set RR_MODE environment variable separately
+# =========================================
+
+# === Core Configuration ===
+# Enable RR-Fuzz
+enabled=true
+
+# Operating mode (auto-detected)
+mode=record
+
+# Trace file output path
+trace_file=./trace-record.txt
+
+# === Debug Configuration ===
+# Debug level: 0=off, 1=error, 2=warn, 3=info, 4=verbose, 5=trace
+debug_level=3
+
+# Debug log output file (default: stderr)
+# debug_file=./debug-record.log
+
+# === Parameters not needed (not used in Record mode) ===
+# shared_memory_name - Fuzzing mode only
+# cmd_pipe_path - Fuzzing mode only
+# status_pipe_path - Fuzzing mode only
+# fork_strategy - Fuzzing mode only
+# fork_threshold - Fuzzing mode only
+

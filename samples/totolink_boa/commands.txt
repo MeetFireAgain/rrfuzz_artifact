@@ -1,0 +1,4 @@
+bash run.sh /path/to/patched-qemu
+
+# optional external rootfs override
+bash run.sh /path/to/patched-qemu /path/to/totolink-rootfs

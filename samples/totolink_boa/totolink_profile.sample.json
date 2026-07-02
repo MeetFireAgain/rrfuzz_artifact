@@ -1,0 +1,24 @@
+{
+  "name": "TOTOLINK_N200RE_ARTIFACT",
+  "arch": "mips",
+  "trace_file": "samples/totolink_boa/seeds/boa_totolink_v2.trace",
+  "dictionary": "samples/totolink_boa/config/totolink_http.dict",
+  "fork_point": 180,
+  "protocol": "http",
+  "rootfs_path": "/tmp/rrfuzz_totolink_rootfs/sim_root",
+  "binary_path": "bin/boa",
+  "ld_prefix": "/tmp/rrfuzz_totolink_rootfs/sim_root",
+  "start_command": [
+    "bin/boa"
+  ],
+  "env": {
+    "TERM": "xterm",
+    "PATH": "/usr/bin:/usr/sbin:/bin:/sbin",
+    "RR_LOG_LEVEL": "INFO",
+    "RR_MOCK_IOCTLS": "1",
+    "RR_MOCK_WIRELESS": "1",
+    "RR_ENABLED": "1"
+  },
+  "workers": 1,
+  "config_patches": []
+}

@@ -1,0 +1,33 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Target Profile",
+  "description": "Standard configuration for a firmware service to be fuzzed",
+  "type": "object",
+  "properties": {
+    "name": { "type": "string" },
+    "arch": { "enum": ["arm", "mips", "x86_64", "aarch64"] },
+    "rootfs_path": { "type": "string" },
+    "binary_path": { "type": "string" },
+    "start_command": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "web_root": { "type": "string" },
+    "discovery": {
+      "type": "object",
+      "properties": {
+        "patterns": { "type": "array", "items": { "type": "string" } },
+        "exclude": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "stimulus_template": {
+      "type": "object",
+      "properties": {
+        "method": { "enum": ["GET", "POST"] },
+        "headers": { "type": "object" },
+        "default_params": { "type": "object" }
+      }
+    }
+  },
+  "required": ["name", "arch", "rootfs_path", "binary_path", "start_command"]
+}

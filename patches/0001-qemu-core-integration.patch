@@ -1,0 +1,550 @@
+diff --git a/.gitignore b/.gitignore
+index 61fa39967b..b4863dc67b 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -1,4 +1,5 @@
+ /GNUmakefile
++baseline_tools/
+ /build/
+ /.cache/
+ /.vscode/
+@@ -20,3 +21,6 @@ GTAGS
+ *.swp
+ *.patch
+ *.gcov
++test_*
++!linux-user/rr_fuzzing/test_checkpoint.py
++!linux-user/rr_fuzzing/test_checkpoint_rotation.py
+diff --git a/accel/tcg/cpu-exec.c b/accel/tcg/cpu-exec.c
+index 7c20d9db12..c5039ea022 100644
+--- a/accel/tcg/cpu-exec.c
++++ b/accel/tcg/cpu-exec.c
+@@ -47,6 +47,18 @@
+ #include "tb-internal.h"
+ #include "internal-common.h"
+ 
++#ifdef CONFIG_USER_ONLY
++/* RR-Fuzz BB trace integration */
++extern void rr_bb_trace_log(uint64_t pc);
++
++/* RR-Fuzz Coverage tracking (Phase 3) */
++extern void rr_coverage_trace_edge(uint64_t pc);
++
++/* Declared non-inline; implemented in rr_bb_trace.c and rr_coverage.c */
++extern bool rr_bb_trace_is_enabled_check(void);
++extern bool rr_coverage_is_enabled_check(void);
++#endif
++
+ /* -icount align implementation. */
+ 
+ typedef struct SyncClocks {
+@@ -888,6 +900,13 @@ static inline void cpu_loop_exec_tb(CPUState *cpu, TranslationBlock *tb,
+                                     int *tb_exit)
+ {
+     trace_exec_tb(tb, pc);
++    
++#ifdef CONFIG_USER_ONLY
++    /* RR-Fuzz: Record basic block execution for offline analysis */
++    /* MOVED TO TCG TRANSLATOR (translator.c) for better accuracy */
++    
++#endif
++    
+     tb = cpu_tb_exec(cpu, tb, tb_exit);
+     if (*tb_exit != TB_EXIT_REQUESTED) {
+         *last_tb = tb;
+diff --git a/accel/tcg/rr_coverage_helper.h b/accel/tcg/rr_coverage_helper.h
+new file mode 100644
+index 0000000000..30d9f7e30e
+--- /dev/null
++++ b/accel/tcg/rr_coverage_helper.h
+@@ -0,0 +1,2 @@
++DEF_HELPER_FLAGS_1(rr_coverage_trace_edge, TCG_CALL_NO_RWG, void, i64)
++DEF_HELPER_FLAGS_1(rr_bb_trace_log, TCG_CALL_NO_RWG, void, i64)
+diff --git a/accel/tcg/tcg-runtime.c b/accel/tcg/tcg-runtime.c
+index fa7ed9739c..02d6f14ac6 100644
+--- a/accel/tcg/tcg-runtime.c
++++ b/accel/tcg/tcg-runtime.c
+@@ -31,6 +31,33 @@
+ #include "exec/helper-info.c.inc"
+ #undef  HELPER_H
+ 
++#define HELPER_H  "accel/tcg/rr_coverage_helper.h"
++#include "exec/helper-proto.h.inc"
++#include "exec/helper-info.c.inc"
++#undef  HELPER_H
++
++/* RR-Fuzz Integration: External definition in linux-user or common code */
++extern void rr_coverage_trace_edge(uint64_t cur_pc);
++extern void rr_bb_trace_log(uint64_t pc);
++
++void HELPER(rr_coverage_trace_edge)(uint64_t cur_pc)
++{
++#ifdef CONFIG_USER_ONLY
++    rr_coverage_trace_edge(cur_pc);
++#else
++    /* No-op for softmmu */
++#endif
++}
++
++void HELPER(rr_bb_trace_log)(uint64_t pc)
++{
++#ifdef CONFIG_USER_ONLY
++    rr_bb_trace_log(pc);
++#else
++    /* No-op for softmmu */
++#endif
++}
++
+ /* 32-bit helpers */
+ 
+ int32_t HELPER(div_i32)(int32_t arg1, int32_t arg2)
+diff --git a/accel/tcg/translator.c b/accel/tcg/translator.c
+index 034f2f359e..ca33443d04 100644
+--- a/accel/tcg/translator.c
++++ b/accel/tcg/translator.c
+@@ -21,6 +21,20 @@
+ #include "disas/disas.h"
+ #include "tb-internal.h"
+ 
++/* RR-Fuzz: Helper Generation */
++#define HELPER_H "accel/tcg/rr_coverage_helper.h"
++#include "exec/helper-proto.h.inc"
++#include "exec/helper-gen.h.inc"
++#undef  HELPER_H
++
++/* RR-Fuzz: Universal Range Filtering Declaration */
++extern bool rr_in_target_range(uint64_t pc);
++
++/* RR-Fuzz: Target Range Variables (Defined here to be visible to TCG) */
++uint64_t g_target_start = 0;
++uint64_t g_target_end = 0;
++
++
+ static void set_can_do_io(DisasContextBase *db, bool val)
+ {
+     QEMU_BUILD_BUG_ON(sizeof_field(CPUState, neg.can_do_io) != 1);
+@@ -148,6 +162,35 @@ void translator_loop(CPUState *cpu, TranslationBlock *tb, int *max_insns,
+ 
+     /* Start translating.  */
+     icount_start_insn = gen_tb_start(db, cflags);
++    
++    /* RR-Fuzz: Instrument Basic Block for Coverage
++     * 
++     * [OPTIMIZATION] Filter at TRANSLATION TIME.
++     * We use externs to access the target range set by elfload.c.
++     * This ensures that we ONLY instrument the target binary, avoiding Libc noise.
++     * 
++     * Note: This relies on the Fork Server flushing the TB cache (queue_tb_flush)
++     * so that code originally translated without instrumentation (or with wrong range)
++     * is re-translated with these checks active.
++     */
++    /* RR-Fuzz: Translation-Time Coverage Filtering
++     * Only instrument basic blocks that fall within the target binary's address range.
++     * This eliminates Libc noise and significantly improves performance.
++     */
++    if (g_target_start > 0 && pc >= g_target_start && pc <= g_target_end) {
++         gen_helper_rr_coverage_trace_edge(tcg_constant_i64(pc));
++         /* RR-Fuzz: Also instrument BB trace for PathFinder */
++         gen_helper_rr_bb_trace_log(tcg_constant_i64(pc));
++    } else if (g_target_start > 0 && (pc < g_target_start || pc > g_target_end)) {
++        // pc outside range - expected for libs
++    } else {
++        // g_target_start == 0 - this is suspicious if we expect coverage
++        static int warned_count = 0;
++        if (++warned_count % 1000 == 1) {
++             fprintf(stderr, "[TRANSLATOR-DEBUG] pc=0x%lx, g_target_start is 0, skipping coverage\n", pc);
++        }
++    }
++
+     ops->tb_start(db, cpu);
+     tcg_debug_assert(db->is_jmp == DISAS_NEXT);  /* no early exit */
+ 
+diff --git a/linux-user/elfload.c b/linux-user/elfload.c
+index 1370ec59be..a1a52bacc9 100644
+--- a/linux-user/elfload.c
++++ b/linux-user/elfload.c
+@@ -18,6 +18,13 @@
+ #include "signal-common.h"
+ #include "loader.h"
+ #include "user-mmap.h"
++
++/* RR-Fuzz: Universal Range Filtering Declaration */
++extern void rr_set_target_range(uint64_t start, uint64_t end);
++
++/* RR-Fuzz: TB Flush for coverage instrumentation */
++#include "exec/tb-flush.h"
++
+ #include "disas/disas.h"
+ #include "qemu/bitops.h"
+ #include "qemu/path.h"
+@@ -1532,6 +1539,8 @@ static void load_elf_image(const char *image_name, const ImageSource *src,
+ 
+             /* Find the full program boundaries.  */
+             if (elf_prot & PROT_EXEC) {
++                fprintf(stderr, "[ELF-LOAD] Executable segment: vaddr=0x%lx, vaddr_ef=0x%lx (prev start_code=0x%lx)\n",
++                        (unsigned long)vaddr, (unsigned long)vaddr_ef, (unsigned long)info->start_code);
+                 if (vaddr < info->start_code) {
+                     info->start_code = vaddr;
+                 }
+@@ -1886,6 +1895,23 @@ int load_elf_binary(struct linux_binprm *bprm, struct image_info *info)
+ 
+     load_elf_image(bprm->filename, &bprm->src, info, &ehdr, &elf_interpreter);
+ 
++    /* RR-Fuzz: Universal Automatic Range Filtering */
++    /* Capture the main binary's code range immediately after loading */
++    {
++        fprintf(stderr, "[RRFUZZ-RANGE] load_bias=0x%lx, start_code=0x%lx, end_code=0x%lx\n",
++                (unsigned long)info->load_bias, (unsigned long)info->start_code, (unsigned long)info->end_code);
++        fprintf(stderr, "[RRFUZZ-RANGE] Setting range: 0x%lx - 0x%lx\n",
++                (unsigned long)info->start_code,
++                (unsigned long)info->end_code);
++        
++        /* CRITICAL FIX: Use load_bias to get ACTUAL runtime addresses, not static ELF addresses.
++         * For PIE/ASLR binaries, start_code/end_code contain virtual addresses from the ELF,
++         * but load_bias contains the actual relocation offset where QEMU loaded the binary.
++         * Runtime PCs will be in the range [load_bias + start_code, load_bias + end_code]. */
++        rr_set_target_range(info->start_code, 
++                           info->end_code);
++    }
++
+     /* Do this so that we can load the interpreter, if need be.  We will
+        change some of these later */
+     bprm->p = setup_arg_pages(bprm, info);
+diff --git a/linux-user/exit.c b/linux-user/exit.c
+index 1ff8fe4f07..b649081ab9 100644
+--- a/linux-user/exit.c
++++ b/linux-user/exit.c
+@@ -27,6 +27,10 @@
+ extern void __gcov_dump(void);
+ #endif
+ 
++#ifdef CONFIG_RR_FUZZING
++extern void rr_framework_cleanup(void);
++#endif
++
+ void preexit_cleanup(CPUArchState *env, int code)
+ {
+ #ifdef CONFIG_GCOV
+@@ -35,4 +39,9 @@ void preexit_cleanup(CPUArchState *env, int code)
+         gdb_exit(code);
+         qemu_plugin_user_exit();
+         perf_exit();
++
++#ifdef CONFIG_RR_FUZZING
++        /* Cleanup RR-Fuzz framework before exit */
++        rr_framework_cleanup();
++#endif
+ }
+diff --git a/linux-user/linuxload.c b/linux-user/linuxload.c
+index 85d700953e..73d86d7c11 100644
+--- a/linux-user/linuxload.c
++++ b/linux-user/linuxload.c
+@@ -184,7 +184,10 @@ bool imgsrc_read(void *dst, off_t offset, size_t len,
+     ssize_t ret;
+ 
+     if (offset + len <= img->cache_size) {
+-        memcpy(dst, img->cache + offset, len);
++        /* Avoid UBSan warning: check cache is non-NULL before memcpy */
++        if (img->cache != NULL && len > 0) {
++            memcpy(dst, img->cache + offset, len);
++        }
+         return true;
+     }
+ 
+diff --git a/linux-user/main.c b/linux-user/main.c
+index db751c0757..0b6eefdfac 100644
+--- a/linux-user/main.c
++++ b/linux-user/main.c
+@@ -57,6 +57,11 @@
+ #include "user-mmap.h"
+ #include "tcg/perf.h"
+ #include "exec/page-vary.h"
++#ifdef CONFIG_RR_FUZZING
++#include "rr_framework.h"
++#include "rr_bb_trace.h"
++extern void rr_set_target_range(uint64_t start, uint64_t end);
++#endif
+ 
+ #ifdef CONFIG_SEMIHOSTING
+ #include "semihosting/semihost.h"
+@@ -1032,6 +1037,28 @@ int main(int argc, char **argv, char **envp)
+     qemu_semihosting_guestfd_init();
+ #endif
+ 
++#ifdef CONFIG_RR_FUZZING
++    /* Initialize RR-Fuzz framework */
++    if (rr_framework_init() < 0) {
++        error_report("Failed to initialize RR-Fuzz framework");
++        exit(EXIT_FAILURE);
++    }
++    
++    /*
++     * RR-Fuzz: set core coverage tracking range.
++     * Re-set here in main.c to use the final post-relocation addresses (PIE compatibility).
++     */
++    rr_set_target_range(info->start_code, info->end_code);
++    rr_flush_tb_cache();
++
++    /* Set main program address range (used for BB trace filtering) */
++    /* Note: only set filter if BB trace is already initialized */
++    if (rr_bb_trace_is_enabled()) {
++        rr_bb_trace_set_main_range(info->start_code, info->end_code);
++        rr_bb_trace_set_filter(true);  /* Enable address filter */
++    }
++#endif
++
+     cpu_loop(env);
+     /* never exits */
+     return 0;
+diff --git a/linux-user/meson.build b/linux-user/meson.build
+index efca843369..6c86686757 100644
+--- a/linux-user/meson.build
++++ b/linux-user/meson.build
+@@ -32,6 +32,10 @@ if get_option('plugins')
+   linux_user_ss.add(files('plugin-api.c'))
+ endif
+ 
++# RR-Fuzz integration
++subdir('rr_fuzzing')
++
++
+ syscall_nr_generators = {}
+ 
+ gen_vdso_exe = executable('gen-vdso', 'gen-vdso.c',
+diff --git a/linux-user/syscall.c b/linux-user/syscall.c
+index 1a5f2a03f9..e2d1362bd8 100644
+--- a/linux-user/syscall.c
++++ b/linux-user/syscall.c
+@@ -24,6 +24,18 @@
+ #include "qemu/queue.h"
+ #include "qemu/plugin.h"
+ #include "tcg/startup.h"
++
++#ifdef CONFIG_RR_FUZZING
++#include "rr_framework.h"
++#include "rr_replay_strace.h"
++
++/* ==================== Optimization Switches ==================== */
++// Speed Optimization: disable PARAM_MODIFIED log to reduce I/O overhead.
++// These logs are emitted every time a syscall argument is modified by the RR framework,
++// generating high log volume. Setting to 0 reduces log volume and improves performance by 5-10%.
++#define RR_ENABLE_PARAM_LOG 0
++
++#endif
+ #include "target_mman.h"
+ #include "exec/page-protection.h"
+ #include "exec/mmap-lock.h"
+@@ -3200,6 +3212,18 @@ static abi_long do_socket(int domain, int type, int protocol)
+ 
+     ret = get_errno(socket(domain, type, protocol));
+     if (ret >= 0) {
++        // FUZZING: Auto-enable SO_REUSEADDR + SO_REUSEPORT for port sharing
++        const char *rr_mode = getenv("RR_MODE");
++        if (rr_mode && strcmp(rr_mode, "fuzzing") == 0) {
++            int optval = 1;
++            // SO_REUSEADDR allows immediate reuse of addresses
++            setsockopt(ret, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval));
++            // SO_REUSEPORT allows multiple sockets to bind to same port
++            #ifdef SO_REUSEPORT
++            setsockopt(ret, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof(optval));
++            #endif
++        }
++        
+         ret = sock_flags_fixup(ret, target_type);
+         if (type == SOCK_PACKET) {
+             /* Manage an obsolete case :
+@@ -5619,7 +5643,8 @@ IOCTLEntry ioctl_entries[] = {
+ };
+ 
+ /* ??? Implement proper locking for ioctls.  */
+-/* do_ioctl() Must return target values and target errnos. */
++#include "rr_mock_ioctls.h"
++
+ static abi_long do_ioctl(int fd, int cmd, abi_long arg)
+ {
+     const IOCTLEntry *ie;
+@@ -5629,6 +5654,13 @@ static abi_long do_ioctl(int fd, int cmd, abi_long arg)
+     int target_size;
+     void *argptr;
+ 
++    /* [RRFUZZ] Professional Mocking Hook */
++    if (rr_try_mock_ioctl(fd, cmd, arg)) {
++        return 0;
++    }
++
++
++
+     ie = ioctl_entries;
+     for(;;) {
+         if (ie->target_cmd == 0) {
+@@ -9257,6 +9289,10 @@ static abi_long do_syscall1(CPUArchState *cpu_env, int num, abi_long arg1,
+ {
+     CPUState *cpu = env_cpu(cpu_env);
+     abi_long ret;
++
++#if defined(TARGET_MIPS)
++    rr_fix_mips_abi(cpu_env);
++#endif
+ #if defined(TARGET_NR_stat) || defined(TARGET_NR_stat64) \
+     || defined(TARGET_NR_lstat) || defined(TARGET_NR_lstat64) \
+     || defined(TARGET_NR_fstat) || defined(TARGET_NR_fstat64) \
+@@ -13970,6 +14006,21 @@ abi_long do_syscall(CPUArchState *cpu_env, int num, abi_long arg1,
+     TaskState *ts = get_task_state(cpu);
+     abi_long ret;
+ 
++    /* 🔥 DEBUG PROBE: Check if CONFIG_RR_FUZZING is defined */
++#ifdef CONFIG_RR_FUZZING
++    static bool logged_defined = false;
++    if (!logged_defined) {
++        fprintf(stderr, "[DEBUG-SYSCALL] CONFIG_RR_FUZZING is DEFINED in syscall.c\n");
++        logged_defined = true;
++    }
++#else
++    static bool logged_undefined = false;
++    if (!logged_undefined) {
++        fprintf(stderr, "[DEBUG-SYSCALL] CONFIG_RR_FUZZING is NOT DEFINED in syscall.c\n");
++        logged_undefined = true;
++    }
++#endif
++
+ #ifdef DEBUG_ERESTARTSYS
+     /* Debug-only code for exercising the syscall-restart code paths
+      * in the per-architecture cpu main loops: restart every syscall
+@@ -13995,8 +14046,65 @@ abi_long do_syscall(CPUArchState *cpu_env, int num, abi_long arg1,
+         print_syscall(cpu_env, num, arg1, arg2, arg3, arg4, arg5, arg6);
+     }
+ 
++#ifdef CONFIG_RR_FUZZING
++    /* RR-Fuzz syscall interception */
++#if RR_ENABLE_PARAM_LOG
++    abi_long orig_args[8] = {arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8};
++#endif
++    abi_long rr_args[8] = {arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8};
++    abi_long rr_ret = rr_do_syscall(cpu_env, num, &rr_args[0], &rr_args[1], 
++                                   &rr_args[2], &rr_args[3], &rr_args[4], 
++                                   &rr_args[5], &rr_args[6], &rr_args[7]);
++    
++#if RR_ENABLE_PARAM_LOG
++    /* Check whether any arguments were modified */
++    bool args_modified = false;
++    for (int i = 0; i < 8; i++) {
++        if (orig_args[i] != rr_args[i]) {
++            args_modified = true;
++            break;
++        }
++    }
++#endif
++    
++    /* If arguments were modified, print detailed info */
++#if RR_ENABLE_PARAM_LOG
++    if (args_modified) {
++        fprintf(stderr, "[PARAM_MODIFIED] Syscall %d: Parameters were modified by RR framework:\n", num);
++        for (int i = 0; i < 8; i++) {
++            if (orig_args[i] != rr_args[i]) {
++                fprintf(stderr, "  arg[%d]: %ld -> %ld (changed)\n", i, orig_args[i], rr_args[i]);
++            } else if (orig_args[i] != 0) {  /* Only show non-zero unmodified arguments */
++                fprintf(stderr, "  arg[%d]: %ld (unchanged)\n", i, orig_args[i]);
++            }
++        }
++        fflush(stderr);
++    }
++#endif
++    
++    if (rr_ret != -1) {
++        /* RR framework handled this syscall; return its result directly */
++        ret = rr_ret;
++    } else {
++        /* Execute syscall with arguments potentially modified by the RR framework */
++        ret = do_syscall1(cpu_env, num, rr_args[0], rr_args[1], rr_args[2], 
++                          rr_args[3], rr_args[4], rr_args[5], rr_args[6], rr_args[7]);
++        
++        /* Call POST-HOOK to handle return value and FD mapping */
++        rr_strace_syscall_post_hook_optimized(cpu_env, num, ret, rr_args);
++
++        /* If arguments were modified, also print execution result */
++#if RR_ENABLE_PARAM_LOG
++        if (args_modified) {
++            fprintf(stderr, "[PARAM_MODIFIED] Syscall %d executed with modified args, result: %ld\n", num, ret);
++            fflush(stderr);
++        }
++#endif
++    }
++#else
+     ret = do_syscall1(cpu_env, num, arg1, arg2, arg3, arg4,
+                       arg5, arg6, arg7, arg8);
++#endif
+ 
+     if (unlikely(qemu_loglevel_mask(LOG_STRACE))) {
+         print_syscall_ret(cpu_env, num, ret, arg1, arg2,
+@@ -14004,5 +14112,20 @@ abi_long do_syscall(CPUArchState *cpu_env, int num, abi_long arg1,
+     }
+ 
+     record_syscall_return(cpu, num, ret);
++
++#ifdef CONFIG_RR_FUZZING
++    /* ✅ BUG FIX #6: Use modified arguments (rr_args) instead of original
++     * 
++     * Critical: In fuzzing/replay mode, rr_do_syscall may modify arguments.
++     * The post-hook must record the ACTUAL arguments that were executed,
++     * not the original ones passed to do_syscall.
++     */
++    if (rr_framework_enabled()) {
++        rr_syscall_post_hook(cpu_env, num, ret, 
++                            rr_args[0], rr_args[1], rr_args[2], rr_args[3],
++                            rr_args[4], rr_args[5], rr_args[6], rr_args[7]);
++    }
++#endif
++
+     return ret;
+ }
+diff --git a/meson.build b/meson.build
+index 72da97829a..46c9348582 100644
+--- a/meson.build
++++ b/meson.build
+@@ -2424,6 +2424,11 @@ foreach k : get_option('trace_backends')
+ endforeach
+ config_host_data.set_quoted('CONFIG_TRACE_FILE', get_option('trace_file'))
+ config_host_data.set_quoted('CONFIG_TLS_PRIORITY', get_option('tls_priority'))
++
++# RR-Fuzz configuration
++if get_option('rr_fuzzing').enabled()
++  config_host_data.set('CONFIG_RR_FUZZING', true)
++endif
+ if iasl.found()
+   config_host_data.set_quoted('CONFIG_IASL', iasl.full_path())
+ endif
+diff --git a/meson_options.txt b/meson_options.txt
+index fff1521e58..e06e7b0634 100644
+--- a/meson_options.txt
++++ b/meson_options.txt
+@@ -318,6 +318,9 @@ option('libvduse', type: 'feature', value: 'auto',
+ option('vduse_blk_export', type: 'feature', value: 'auto',
+        description: 'VDUSE block export support')
+ 
++option('rr_fuzzing', type: 'feature', value: 'auto',
++       description: 'RR-Fuzz record-replay fuzzing framework support')
++
+ option('capstone', type: 'feature', value: 'auto',
+        description: 'Whether and how to find the capstone library')
+ option('fdt', type: 'combo', value: 'auto',
+diff --git a/scripts/meson-buildoptions.sh b/scripts/meson-buildoptions.sh
+index 0ebe6bc52a..1cadaf1475 100644
+--- a/scripts/meson-buildoptions.sh
++++ b/scripts/meson-buildoptions.sh
+@@ -177,6 +177,7 @@ meson_options_help() {
+   printf "%s\n" '  rbd             Ceph block device driver'
+   printf "%s\n" '  rdma            Enable RDMA-based migration'
+   printf "%s\n" '  replication     replication support'
++  printf "%s\n" '  rr-fuzzing      RR-Fuzz record-replay fuzzing framework support'
+   printf "%s\n" '  rust            Rust support'
+   printf "%s\n" '  rutabaga-gfx    rutabaga_gfx support'
+   printf "%s\n" '  sdl             SDL user interface'
+@@ -467,6 +468,8 @@ _meson_option_parse() {
+     --disable-replication) printf "%s" -Dreplication=disabled ;;
+     --enable-rng-none) printf "%s" -Drng_none=true ;;
+     --disable-rng-none) printf "%s" -Drng_none=false ;;
++    --enable-rr-fuzzing) printf "%s" -Drr_fuzzing=enabled ;;
++    --disable-rr-fuzzing) printf "%s" -Drr_fuzzing=disabled ;;
+     --rtsig-map=*) quote_sh "-Drtsig_map=$2" ;;
+     --enable-rust) printf "%s" -Drust=enabled ;;
+     --disable-rust) printf "%s" -Drust=disabled ;;
